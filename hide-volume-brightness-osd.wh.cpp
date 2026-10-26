@@ -2,7 +2,7 @@
 // @id              hide-volume-brightness-osd
 // @name            Hide Volume & Brightness OSD
 // @description     Selectively hides Windows volume, brightness, media and other OSDs. Fast, lightweight and fully configurable.
-// @version         1.3
+// @version         1.3.1
 // @author          NietNormaleMeneer
 // @github          https://github.com/louis141414
 // @twitter         
@@ -57,8 +57,6 @@ Source code: [https://github.com/louis141414/hide-volume-brightness-osd](https:/
 - pollIntervalMs: 120
   $name: Check interval (ms)
   $description: How often the mod looks for OSD windows. Lower = faster reaction, slightly higher CPU. Recommended: 80-150.
-  $min: 40
-  $max: 500
 */
 // ==/WindhawkModSettings==
 
@@ -215,7 +213,7 @@ void LoadSettings()
 // -------------------- Windhawk entry points --------------------
 BOOL Wh_ModInit()
 {
-    Wh_Log(L"Hide Volume & Brightness OSD v1.3 – Init");
+    Wh_Log(L"Hide Volume & Brightness OSD v1.3.1 – Init");
 
     LoadSettings();
     StartTimer();
