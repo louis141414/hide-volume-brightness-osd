@@ -2,7 +2,7 @@
 // @id              hide-volume-brightness-osd
 // @name            Hide Volume & Brightness OSD
 // @description     Selectively hides Windows volume, brightness, media and other OSDs. Fast, lightweight and fully configurable.
-// @version         1.3.2
+// @version         1.3.3
 // @author          NietNormaleMeneer
 // @github          https://github.com/louis141414
 // @homepage        https://ko-fi.com/nietnormalemeneer
@@ -43,19 +43,19 @@ Source code: [https://github.com/louis141414/hide-volume-brightness-osd](https:/
 /*
 - hideVolume: true
   $name: Hide Volume OSD
-  $description: Hides the volume bar / slider that appears when changing volume with keyboard or other methods.
+  $description: Hides the volume bar that appears when changing volume.
 - hideBrightness: true
   $name: Hide Brightness OSD
-  $description: Hides the brightness indicator that appears when changing screen brightness.
+  $description: Hides the brightness indicator that appears when changing brightness.
 - hideMedia: true
   $name: Hide Media / Now Playing flyout
-  $description: Hides the larger media controls / now-playing OSD that sometimes appears together with volume changes.
+  $description: Hides the larger media controls that sometimes appear with volume changes.
 - hideOther: false
   $name: Hide other system OSDs
   $description: Also tries to hide less common OSDs (e.g. airplane mode).
 - pollIntervalMs: 120
   $name: Check interval (ms)
-  $description: How often the mod looks for OSD windows. Lower = faster reaction, slightly higher CPU. Recommended: 80-150.
+  $description: How often the mod looks for OSD windows. Lower = faster, slightly higher CPU.
 */
 // ==/WindhawkModSettings==
 
@@ -212,7 +212,7 @@ void LoadSettings()
 // -------------------- Windhawk entry points --------------------
 BOOL Wh_ModInit()
 {
-    Wh_Log(L"Hide Volume & Brightness OSD v1.3.2 – Init");
+    Wh_Log(L"Hide Volume & Brightness OSD v1.3.3 – Init");
 
     LoadSettings();
     StartTimer();
