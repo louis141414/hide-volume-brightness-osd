@@ -1,12 +1,14 @@
 // ==WindhawkMod==
 // @id              hide-volume-brightness-osd
 // @name            Hide Volume & Brightness OSD
-// @description     Hides Windows volume, brightness and media OSDs. No admin required. Works on Windows 11 25H2.
-// @version         3.0
+// @description     Hides Windows volume/brightness/media OSDs using the proven Minimize method. No admin needed.
+// @version         3.1
 // @author          NietNormaleMeneer
 // @github          https://github.com/louis141414
 // @homepage        https://ko-fi.com/nietnormalemeneer
 // @include         explorer.exe
+// @include         ShellHost.exe
+// @include         ShellExperienceHost.exe
 // @compilerOptions -luser32
 // ==/WindhawkMod==
 
@@ -14,11 +16,10 @@
 /*
 # Hide Volume & Brightness OSD
 
-Hides the Windows volume / brightness / media OSDs.
+Uses the same method as HideVolumeOSD:
+find the system OSD host window once, then keep it minimized.
 
-Uses a **system-wide accessibility event hook** (no admin, works even when the OSD lives in another process).
-
-Tested approach for Windows 11 25H2.
+Works on Windows 11 25H2 (build 26200) without admin rights.
 
 ### Support
 **[https://ko-fi.com/nietnormalemeneer](https://ko-fi.com/nietnormalemeneer)**
@@ -31,220 +32,134 @@ Source: [https://github.com/louis141414/hide-volume-brightness-osd](https://gith
 /*
 - enabled: true
   $name: Enable mod
-  $description: Turn OSD hiding on or off.
-- aggressive: true
-  $name: Aggressive mode
-  $description: Hide more XAML host windows that look like OSDs. Turn off if something else disappears.
+  $description: Keep the OSD hidden while this is on.
 */
 // ==/WindhawkModSettings==
 
 #include <windows.h>
 
-bool g_enabled = true;
-bool g_aggressive = true;
+// SW_MINIMIZE = 6, SW_RESTORE = 9
+#ifndef SW_MINIMIZE
+#define SW_MINIMIZE 6
+#endif
 
-HWINEVENTHOOK g_showHook = nullptr;
+bool g_enabled = true;
+HWND g_osdHwnd = nullptr;
 UINT_PTR g_timerId = 0;
 
-// -------------------- Detection --------------------
+// -------------------- Find (exact HideVolumeOSD logic) --------------------
 
-bool ClassEquals(HWND hwnd, const wchar_t* name)
+HWND FindOsdByHierarchy(const wchar_t* outerClass,
+                        const wchar_t* innerClass,
+                        const wchar_t* innerInnerClass)
 {
-    wchar_t cls[256]{};
-    if (!GetClassNameW(hwnd, cls, 256))
-        return false;
-    return _wcsicmp(cls, name) == 0;
-}
+    HWND found = nullptr;
+    HWND result = nullptr;
+    int pairCount = 0;
 
-bool HasChildClass(HWND parent, const wchar_t* childClass)
-{
-    return FindWindowExW(parent, nullptr, childClass, nullptr) != nullptr;
-}
-
-bool LooksLikeOsdSize(HWND hwnd)
-{
-    RECT rc{};
-    if (!GetWindowRect(hwnd, &rc))
-        return false;
-
-    int w = rc.right - rc.left;
-    int h = rc.bottom - rc.top;
-
-    // Compact volume/brightness bar OR larger media flyout
-    if (w <= 0 || h <= 0)
-        return false;
-
-    if (g_aggressive)
-        return (w >= 20 && w <= 1400 && h >= 15 && h <= 700);
-
-    return (w >= 40 && w <= 1200 && h >= 20 && h <= 600);
-}
-
-bool IsModernOsd(HWND hwnd)
-{
-    if (!ClassEquals(hwnd, L"XamlExplorerHostIslandWindow"))
-        return false;
-
-    // Common Win11 OSD tree
-    HWND bridge = FindWindowExW(hwnd, nullptr,
-        L"Windows.UI.Composition.DesktopWindowContentBridge", nullptr);
-    if (bridge)
+    while ((found = FindWindowExW(nullptr, found, outerClass, nullptr)) != nullptr)
     {
-        if (HasChildClass(bridge, L"DesktopWindowXamlSource"))
-            return LooksLikeOsdSize(hwnd);
-    }
+        HWND inner = FindWindowExW(found, nullptr, innerClass, nullptr);
+        if (!inner)
+            continue;
 
-    // Fallback: any XAML source under this host with OSD-like size
-    if (g_aggressive && HasChildClass(hwnd, L"DesktopWindowXamlSource"))
-        return LooksLikeOsdSize(hwnd);
-
-    // Another possible intermediate
-    if (g_aggressive)
-    {
-        HWND child = nullptr;
-        while ((child = FindWindowExW(hwnd, child, nullptr, nullptr)) != nullptr)
+        if (innerInnerClass && innerInnerClass[0])
         {
-            if (HasChildClass(child, L"DesktopWindowXamlSource") && LooksLikeOsdSize(hwnd))
-                return true;
+            if (!FindWindowExW(inner, nullptr, innerInnerClass, nullptr))
+                continue;
         }
+
+        // Prefer a window that currently has non-zero size (gpkgpk improvement),
+        // but still accept zero-size hosts so we can minimize them early.
+        RECT rc{};
+        GetWindowRect(found, &rc);
+        int w = rc.right - rc.left;
+        int h = rc.bottom - rc.top;
+
+        if (pairCount == 0)
+            result = found;
+
+        // Prefer non-zero size if we see one
+        if (w > 0 && h > 0)
+            result = found;
+
+        pairCount++;
     }
 
-    return false;
+    return result;
 }
 
-bool IsClassicOsd(HWND hwnd)
+HWND FindOsdWindow()
 {
-    if (!ClassEquals(hwnd, L"NativeHWNDHost"))
-        return false;
+    // Windows 11 path (build >= 22000) – also used on 25H2 / 26200
+    HWND hwnd = FindOsdByHierarchy(
+        L"XamlExplorerHostIslandWindow",
+        L"Windows.UI.Composition.DesktopWindowContentBridge",
+        L"DesktopWindowXamlSource");
 
-    if (!HasChildClass(hwnd, L"DirectUIHWND"))
-        return false;
+    if (hwnd)
+        return hwnd;
 
-    return LooksLikeOsdSize(hwnd);
+    // Windows 10 / classic fallback
+    hwnd = FindOsdByHierarchy(
+        L"NativeHWNDHost",
+        L"DirectUIHWND",
+        nullptr);
+
+    return hwnd;
 }
 
-bool IsOsdWindow(HWND hwnd)
+// Force the OSD host to exist (same idea as HideVolumeOSD Init)
+void TriggerOsdCreation()
 {
-    if (!hwnd || !IsWindow(hwnd))
-        return false;
-    return IsModernOsd(hwnd) || IsClassicOsd(hwnd);
+    // Volume mute toggle tends to create the host without changing volume much
+    keybd_event(VK_VOLUME_MUTE, 0, 0, 0);
+    keybd_event(VK_VOLUME_MUTE, 0, KEYEVENTF_KEYUP, 0);
+    Sleep(50);
+    keybd_event(VK_VOLUME_MUTE, 0, 0, 0);
+    keybd_event(VK_VOLUME_MUTE, 0, KEYEVENTF_KEYUP, 0);
 }
 
-void ForceHide(HWND hwnd)
+void EnsureOsdHandle()
 {
-    if (!hwnd || !IsWindow(hwnd))
+    if (g_osdHwnd && IsWindow(g_osdHwnd))
         return;
 
-    // Hide + minimize + park off-screen
-    ShowWindow(hwnd, SW_HIDE);
-    ShowWindow(hwnd, SW_MINIMIZE);
-    SetWindowPos(hwnd, nullptr, -32000, -32000, 0, 0,
-        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW);
-}
+    g_osdHwnd = FindOsdWindow();
 
-void HideAllOsds()
-{
-    if (!g_enabled)
-        return;
-
-    HWND hwnd = nullptr;
-    while ((hwnd = FindWindowExW(nullptr, hwnd, L"XamlExplorerHostIslandWindow", nullptr)) != nullptr)
+    if (!g_osdHwnd)
     {
-        if (IsModernOsd(hwnd))
-        {
-            ForceHide(hwnd);
-            Wh_Log(L"Hide modern OSD %p", hwnd);
-        }
+        Wh_Log(L"OSD host not found – triggering creation");
+        TriggerOsdCreation();
+        Sleep(200);
+        g_osdHwnd = FindOsdWindow();
     }
 
-    hwnd = nullptr;
-    while ((hwnd = FindWindowExW(nullptr, hwnd, L"NativeHWNDHost", nullptr)) != nullptr)
-    {
-        if (IsClassicOsd(hwnd))
-        {
-            ForceHide(hwnd);
-            Wh_Log(L"Hide classic OSD %p", hwnd);
-        }
-    }
-}
-
-// -------------------- System-wide show event --------------------
-// This is the important part for 25H2: we see the window the moment
-// ANY process shows it, without needing to inject into that process.
-
-void CALLBACK WinEventProc(
-    HWINEVENTHOOK, DWORD event, HWND hwnd,
-    LONG idObject, LONG idChild, DWORD, DWORD)
-{
-    if (!g_enabled)
-        return;
-
-    if (event != EVENT_OBJECT_SHOW)
-        return;
-
-    // Only top-level / interesting objects
-    if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
-        return;
-
-    if (!hwnd || !IsWindow(hwnd))
-        return;
-
-    // Quick class filter before heavier checks
-    wchar_t cls[256]{};
-    if (!GetClassNameW(hwnd, cls, 256))
-        return;
-
-    if (_wcsicmp(cls, L"XamlExplorerHostIslandWindow") != 0 &&
-        _wcsicmp(cls, L"NativeHWNDHost") != 0)
-        return;
-
-    if (IsOsdWindow(hwnd))
-    {
-        Wh_Log(L"EVENT_OBJECT_SHOW OSD %p class=%s", hwnd, cls);
-        ForceHide(hwnd);
-
-        // Hide again a few times – Windows sometimes re-shows it
-        for (int i = 0; i < 5; ++i)
-        {
-            Sleep(30);
-            if (IsWindow(hwnd))
-                ForceHide(hwnd);
-        }
-    }
-}
-
-void StartShowHook()
-{
-    if (g_showHook)
-        return;
-
-    g_showHook = SetWinEventHook(
-        EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW,
-        nullptr,
-        WinEventProc,
-        0, 0, // all processes / all threads
-        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-
-    if (g_showHook)
-        Wh_Log(L"Show-event hook installed");
+    if (g_osdHwnd)
+        Wh_Log(L"OSD host found: %p", g_osdHwnd);
     else
-        Wh_Log(L"Show-event hook FAILED err=%u", GetLastError());
+        Wh_Log(L"OSD host still not found");
 }
 
-void StopShowHook()
+void KeepMinimized()
 {
-    if (g_showHook)
+    if (!g_enabled)
+        return;
+
+    EnsureOsdHandle();
+
+    if (g_osdHwnd && IsWindow(g_osdHwnd))
     {
-        UnhookWinEvent(g_showHook);
-        g_showHook = nullptr;
+        // This is the proven HideVolumeOSD method
+        ShowWindow(g_osdHwnd, SW_MINIMIZE);
     }
 }
 
-// -------------------- Backup timer --------------------
+// -------------------- Timer --------------------
 
 void CALLBACK TimerProc(HWND, UINT, UINT_PTR, DWORD)
 {
-    HideAllOsds();
+    KeepMinimized();
 }
 
 void StartTimer()
@@ -255,7 +170,7 @@ void StartTimer()
         g_timerId = 0;
     }
     if (g_enabled)
-        g_timerId = SetTimer(nullptr, 0, 100, TimerProc);
+        g_timerId = SetTimer(nullptr, 0, 250, TimerProc); // low CPU, enough to re-minimize
 }
 
 void StopTimer()
@@ -272,17 +187,17 @@ void StopTimer()
 void LoadSettings()
 {
     g_enabled = Wh_GetIntSetting(L"enabled") != 0;
-    g_aggressive = Wh_GetIntSetting(L"aggressive") != 0;
 }
 
 BOOL Wh_ModInit()
 {
-    Wh_Log(L"Hide Volume & Brightness OSD v3.0 – Init (25H2 / no admin)");
+    Wh_Log(L"Hide Volume & Brightness OSD v3.1 – Init (HideVolumeOSD method)");
 
     LoadSettings();
-    StartShowHook();
+
+    EnsureOsdHandle();
+    KeepMinimized();
     StartTimer();
-    HideAllOsds();
 
     return TRUE;
 }
@@ -291,7 +206,13 @@ void Wh_ModUninit()
 {
     Wh_Log(L"Hide Volume & Brightness OSD – Uninit");
     StopTimer();
-    StopShowHook();
+
+    // Restore so the OSD works again after unloading
+    if (g_osdHwnd && IsWindow(g_osdHwnd))
+    {
+        ShowWindow(g_osdHwnd, SW_RESTORE);
+        Wh_Log(L"Restored OSD host %p", g_osdHwnd);
+    }
 }
 
 void Wh_ModSettingsChanged()
@@ -300,13 +221,14 @@ void Wh_ModSettingsChanged()
 
     if (g_enabled)
     {
-        StartShowHook();
+        EnsureOsdHandle();
+        KeepMinimized();
         StartTimer();
-        HideAllOsds();
     }
     else
     {
         StopTimer();
-        // keep hook but it no-ops when disabled
+        if (g_osdHwnd && IsWindow(g_osdHwnd))
+            ShowWindow(g_osdHwnd, SW_RESTORE);
     }
 }
