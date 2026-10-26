@@ -2,10 +2,9 @@
 // @id              hide-volume-brightness-osd
 // @name            Hide Volume & Brightness OSD
 // @description     Selectively hides Windows volume, brightness, media and other OSDs. Fast, lightweight and fully configurable.
-// @version         1.3.1
+// @version         1.3.2
 // @author          NietNormaleMeneer
 // @github          https://github.com/louis141414
-// @twitter         
 // @homepage        https://ko-fi.com/nietnormalemeneer
 // @include         explorer.exe
 // @compilerOptions -luser32
@@ -213,7 +212,7 @@ void LoadSettings()
 // -------------------- Windhawk entry points --------------------
 BOOL Wh_ModInit()
 {
-    Wh_Log(L"Hide Volume & Brightness OSD v1.3.1 – Init");
+    Wh_Log(L"Hide Volume & Brightness OSD v1.3.2 – Init");
 
     LoadSettings();
     StartTimer();
