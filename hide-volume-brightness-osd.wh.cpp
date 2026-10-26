@@ -1,12 +1,14 @@
 // ==WindhawkMod==
 // @id              hide-volume-brightness-osd
 // @name            Hide Volume & Brightness OSD
-// @description     Selectively hides Windows volume, brightness, media and other OSDs. Fast, lightweight and fully configurable.
-// @version         1.3.3
+// @description     Hides Windows volume, brightness and media OSDs on Windows 10/11. Blocks the OSD from being shown.
+// @version         2.1
 // @author          NietNormaleMeneer
 // @github          https://github.com/louis141414
 // @homepage        https://ko-fi.com/nietnormalemeneer
 // @include         explorer.exe
+// @include         ShellExperienceHost.exe
+// @include         ShellHost.exe
 // @compilerOptions -luser32
 // ==/WindhawkMod==
 
@@ -14,122 +16,50 @@
 /*
 # Hide Volume & Brightness OSD
 
-A fast and lightweight Windhawk mod that **selectively hides** the Windows on-screen displays (OSDs) for volume, brightness, media controls and more.
+Blocks the Windows volume / brightness / media OSDs from appearing.
 
-Perfect if you want a cleaner desktop without the floating bars that appear when you change volume or brightness.
+Designed for **Windows 11** (also works on Windows 10).
 
-### Features
-- Hide **Volume OSD**
-- Hide **Brightness OSD**
-- Hide **Media / Now Playing** flyout
-- Optionally hide other system OSDs
-- Extremely low CPU usage
-- Instant reaction (configurable poll interval)
-- Works on Windows 10 and Windows 11
-
-### Settings
-Just enable the specific OSDs you want to hide. Everything else stays normal.
-
-### Support the developer
-If you find this mod useful, consider buying me a coffee:
-
+### Support
 **[https://ko-fi.com/nietnormalemeneer](https://ko-fi.com/nietnormalemeneer)**
 
-Source code: [https://github.com/louis141414/hide-volume-brightness-osd](https://github.com/louis141414/hide-volume-brightness-osd)
+Source: [https://github.com/louis141414/hide-volume-brightness-osd](https://github.com/louis141414/hide-volume-brightness-osd)
 */
 // ==/WindhawkModReadme==
 
 // ==WindhawkModSettings==
 /*
-- hideVolume: true
-  $name: Hide Volume OSD
-  $description: Hides the volume bar that appears when changing volume.
-- hideBrightness: true
-  $name: Hide Brightness OSD
-  $description: Hides the brightness indicator that appears when changing brightness.
-- hideMedia: true
-  $name: Hide Media / Now Playing flyout
-  $description: Hides the larger media controls that sometimes appear with volume changes.
-- hideOther: false
-  $name: Hide other system OSDs
-  $description: Also tries to hide less common OSDs (e.g. airplane mode).
-- pollIntervalMs: 120
-  $name: Check interval (ms)
-  $description: How often the mod looks for OSD windows. Lower = faster, slightly higher CPU.
+- enabled: true
+  $name: Enable mod
+  $description: Turn the OSD hiding on or off.
 */
 // ==/WindhawkModSettings==
 
 #include <windows.h>
 
-// -------------------- Settings --------------------
-bool g_hideVolume     = true;
-bool g_hideBrightness = true;
-bool g_hideMedia      = true;
-bool g_hideOther      = false;
-int  g_pollIntervalMs = 120;
-
-// -------------------- State --------------------
+bool g_enabled = true;
 UINT_PTR g_timerId = 0;
 
-// -------------------- Helpers --------------------
-inline bool IsValidOsdSize(int w, int h)
+// -------------------- Detection --------------------
+
+bool IsModernOsdHost(HWND hwnd)
 {
-    // Typical OSD sizes – filters out unrelated windows
-    return (w > 40 && w < 900 && h > 20 && h < 480);
-}
+    if (!hwnd || !IsWindow(hwnd))
+        return false;
 
-// Classic NativeHWNDHost + DirectUIHWND (Windows 10 style + many Win11 builds)
-HWND FindClassicOsd()
-{
-    HWND hwnd = nullptr;
-    while ((hwnd = FindWindowExW(nullptr, hwnd, L"NativeHWNDHost", nullptr)) != nullptr)
-    {
-        if (FindWindowExW(hwnd, nullptr, L"DirectUIHWND", nullptr))
-        {
-            RECT rc{};
-            if (GetWindowRect(hwnd, &rc))
-            {
-                int w = rc.right - rc.left;
-                int h = rc.bottom - rc.top;
-                if (IsValidOsdSize(w, h))
-                    return hwnd;
-            }
-        }
-    }
-    return nullptr;
-}
+    wchar_t cls[256]{};
+    if (!GetClassNameW(hwnd, cls, 256))
+        return false;
 
-// Modern Windows 11 XAML-based OSD
-HWND FindModernOsd()
-{
-    HWND hwnd = nullptr;
-    while ((hwnd = FindWindowExW(nullptr, hwnd, L"XamlExplorerHostIslandWindow", nullptr)) != nullptr)
-    {
-        HWND bridge = FindWindowExW(hwnd, nullptr,
-            L"Windows.UI.Composition.DesktopWindowContentBridge", nullptr);
-        if (!bridge)
-            continue;
+    if (_wcsicmp(cls, L"XamlExplorerHostIslandWindow") != 0)
+        return false;
 
-        if (!FindWindowExW(bridge, nullptr, L"DesktopWindowXamlSource", nullptr))
-            continue;
+    HWND bridge = FindWindowExW(hwnd, nullptr,
+        L"Windows.UI.Composition.DesktopWindowContentBridge", nullptr);
+    if (!bridge)
+        return false;
 
-        RECT rc{};
-        if (!GetWindowRect(hwnd, &rc))
-            continue;
-
-        int w = rc.right - rc.left;
-        int h = rc.bottom - rc.top;
-
-        if (IsValidOsdSize(w, h))
-            return hwnd;
-    }
-    return nullptr;
-}
-
-// Decide whether this OSD should be hidden based on current settings
-bool ShouldHide(HWND hwnd)
-{
-    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd))
+    if (!FindWindowExW(bridge, nullptr, L"DesktopWindowXamlSource", nullptr))
         return false;
 
     RECT rc{};
@@ -139,37 +69,119 @@ bool ShouldHide(HWND hwnd)
     int w = rc.right - rc.left;
     int h = rc.bottom - rc.top;
 
-    // Media / Now Playing flyouts are usually larger
-    bool isMediaLike = (w > 260 || h > 110);
-
-    if (isMediaLike)
-        return g_hideMedia;
-
-    // Compact bars = volume or brightness
-    // (Windows does not expose a reliable way to distinguish them without heavy hooks)
-    if (g_hideVolume || g_hideBrightness)
-        return true;
-
-    return g_hideOther;
+    return (w > 40 && w < 1200 && h > 20 && h < 600);
 }
 
-void HideMatchingOsds()
+bool IsClassicOsdHost(HWND hwnd)
 {
-    // Classic
-    HWND classic = FindClassicOsd();
-    if (classic && ShouldHide(classic))
-        ShowWindow(classic, SW_HIDE);
+    if (!hwnd || !IsWindow(hwnd))
+        return false;
 
-    // Modern Win11
-    HWND modern = FindModernOsd();
-    if (modern && ShouldHide(modern))
-        ShowWindow(modern, SW_HIDE);
+    wchar_t cls[256]{};
+    if (!GetClassNameW(hwnd, cls, 256))
+        return false;
+
+    if (_wcsicmp(cls, L"NativeHWNDHost") != 0)
+        return false;
+
+    if (!FindWindowExW(hwnd, nullptr, L"DirectUIHWND", nullptr))
+        return false;
+
+    RECT rc{};
+    if (!GetWindowRect(hwnd, &rc))
+        return false;
+
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+
+    return (w > 40 && w < 1200 && h > 20 && h < 600);
+}
+
+bool IsOsdWindow(HWND hwnd)
+{
+    return IsModernOsdHost(hwnd) || IsClassicOsdHost(hwnd);
+}
+
+void ForceHide(HWND hwnd)
+{
+    if (!hwnd || !IsWindow(hwnd))
+        return;
+
+    ShowWindow(hwnd, SW_HIDE);
+    ShowWindow(hwnd, SW_MINIMIZE);
+
+    SetWindowPos(hwnd, nullptr, -32000, -32000, 0, 0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void HideAllOsds()
+{
+    if (!g_enabled)
+        return;
+
+    HWND hwnd = nullptr;
+    while ((hwnd = FindWindowExW(nullptr, hwnd, L"XamlExplorerHostIslandWindow", nullptr)) != nullptr)
+    {
+        if (IsModernOsdHost(hwnd))
+        {
+            ForceHide(hwnd);
+            Wh_Log(L"Hidden modern OSD hwnd=%p", hwnd);
+        }
+    }
+
+    hwnd = nullptr;
+    while ((hwnd = FindWindowExW(nullptr, hwnd, L"NativeHWNDHost", nullptr)) != nullptr)
+    {
+        if (IsClassicOsdHost(hwnd))
+        {
+            ForceHide(hwnd);
+            Wh_Log(L"Hidden classic OSD hwnd=%p", hwnd);
+        }
+    }
+}
+
+// -------------------- Hooks --------------------
+
+using ShowWindow_t = decltype(&ShowWindow);
+ShowWindow_t ShowWindow_Original;
+
+BOOL WINAPI ShowWindow_Hook(HWND hWnd, int nCmdShow)
+{
+    if (g_enabled && nCmdShow != SW_HIDE && nCmdShow != SW_MINIMIZE && IsOsdWindow(hWnd))
+    {
+        Wh_Log(L"Blocked ShowWindow on OSD hwnd=%p cmd=%d", hWnd, nCmdShow);
+        return ShowWindow_Original(hWnd, SW_HIDE);
+    }
+    return ShowWindow_Original(hWnd, nCmdShow);
+}
+
+using SetWindowPos_t = decltype(&SetWindowPos);
+SetWindowPos_t SetWindowPos_Original;
+
+BOOL WINAPI SetWindowPos_Hook(HWND hWnd, HWND hWndInsertAfter,
+    int X, int Y, int cx, int cy, UINT uFlags)
+{
+    if (g_enabled && IsOsdWindow(hWnd))
+    {
+        if (!(uFlags & SWP_NOMOVE))
+        {
+            X = -32000;
+            Y = -32000;
+        }
+        uFlags |= SWP_NOACTIVATE;
+        uFlags &= ~SWP_SHOWWINDOW;
+        uFlags |= SWP_HIDEWINDOW;
+
+        Wh_Log(L"Blocked/redirected SetWindowPos on OSD hwnd=%p", hWnd);
+    }
+    return SetWindowPos_Original(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
 }
 
 // -------------------- Timer --------------------
+
 void CALLBACK TimerProc(HWND, UINT, UINT_PTR, DWORD)
 {
-    HideMatchingOsds();
+    HideAllOsds();
 }
 
 void StartTimer()
@@ -179,12 +191,8 @@ void StartTimer()
         KillTimer(nullptr, g_timerId);
         g_timerId = 0;
     }
-
-    // Only run when at least one type is enabled
-    if (g_hideVolume || g_hideBrightness || g_hideMedia || g_hideOther)
-    {
-        g_timerId = SetTimer(nullptr, 0, (UINT)g_pollIntervalMs, TimerProc);
-    }
+    if (g_enabled)
+        g_timerId = SetTimer(nullptr, 0, 80, TimerProc);
 }
 
 void StopTimer()
@@ -196,27 +204,34 @@ void StopTimer()
     }
 }
 
-// -------------------- Settings --------------------
+// -------------------- Entry points --------------------
+
 void LoadSettings()
 {
-    g_hideVolume     = Wh_GetIntSetting(L"hideVolume") != 0;
-    g_hideBrightness = Wh_GetIntSetting(L"hideBrightness") != 0;
-    g_hideMedia      = Wh_GetIntSetting(L"hideMedia") != 0;
-    g_hideOther      = Wh_GetIntSetting(L"hideOther") != 0;
-    g_pollIntervalMs = Wh_GetIntSetting(L"pollIntervalMs");
-
-    if (g_pollIntervalMs < 40)  g_pollIntervalMs = 40;
-    if (g_pollIntervalMs > 500) g_pollIntervalMs = 500;
+    g_enabled = Wh_GetIntSetting(L"enabled") != 0;
 }
 
-// -------------------- Windhawk entry points --------------------
 BOOL Wh_ModInit()
 {
-    Wh_Log(L"Hide Volume & Brightness OSD v1.3.3 – Init");
+    Wh_Log(L"Hide Volume & Brightness OSD v2.1 (Win11) – Init");
 
     LoadSettings();
+
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32)
+    {
+        void* pShowWindow = (void*)GetProcAddress(user32, "ShowWindow");
+        void* pSetWindowPos = (void*)GetProcAddress(user32, "SetWindowPos");
+
+        if (pShowWindow)
+            Wh_SetFunctionHook(pShowWindow, (void*)ShowWindow_Hook, (void**)&ShowWindow_Original);
+
+        if (pSetWindowPos)
+            Wh_SetFunctionHook(pSetWindowPos, (void*)SetWindowPos_Hook, (void**)&SetWindowPos_Original);
+    }
+
     StartTimer();
-    HideMatchingOsds();   // hide any currently visible OSDs immediately
+    HideAllOsds();
 
     return TRUE;
 }
@@ -229,7 +244,8 @@ void Wh_ModUninit()
 
 void Wh_ModSettingsChanged()
 {
-    Wh_Log(L"Settings changed");
     LoadSettings();
     StartTimer();
+    if (g_enabled)
+        HideAllOsds();
 }
